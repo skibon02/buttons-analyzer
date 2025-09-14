@@ -1,1 +1,5 @@
 /target
+venv
+samples
+web_output
+names.json

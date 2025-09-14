@@ -1,4 +1,5 @@
-mod print_thread;
+mod calc;
+pub mod export;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,7 +16,8 @@ use ringbuf::LocalRb;
 use ringbuf::storage::Heap;
 use ringbuf::traits::RingBuffer;
 use sparkles_core::{Timestamp, TimestampProvider};
-use crate::print_thread::spawn;
+use crate::calc::spawn;
+use crate::export::export_cur_stats;
 
 pub static TICKS_PER_S: AtomicU64 = AtomicU64::new(0);
 struct Shared {
@@ -82,14 +84,16 @@ impl winit::application::ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        let tm = Timestamp::now();
         if let WindowEvent::CloseRequested = event {
+            export_cur_stats(&self.shared);
             event_loop.exit();
         }
-    }
 
-    fn device_event(&mut self, event_loop: &ActiveEventLoop, device_id: DeviceId, event: DeviceEvent) {
-        let tm = Timestamp::now();
-        if let DeviceEvent::Key (ev) = event {
+        if let WindowEvent::KeyboardInput {
+            event: ev,
+            ..
+        } = event {
             if let PhysicalKey::Code(KeyCode::KeyZ) | PhysicalKey::Code(KeyCode::KeyX) =  ev.physical_key {
                 if ev.state.is_pressed() {
                     if self.prev_tm != 0 {
@@ -101,6 +105,7 @@ impl winit::application::ApplicationHandler for App {
             }
             else if let PhysicalKey::Code(KeyCode::Backquote) = ev.physical_key {
                 if ev.state.is_pressed() {
+                    export_cur_stats(&self.shared);
                     info!("Resetting press data...");
                     self.shared.lock().unwrap().last_presses.clear();
                     self.prev_tm = 0;
@@ -111,7 +116,13 @@ impl winit::application::ApplicationHandler for App {
                     info!("Key: {:?}", ev.physical_key);
                 }
             }
-        }
+        };
     }
+
+    // fn device_event(&mut self, event_loop: &ActiveEventLoop, device_id: DeviceId, event: DeviceEvent) {
+    //     let tm = Timestamp::now();
+    //     if let DeviceEvent::Key (ev) = event {
+    //     }
+    // }
 
 }

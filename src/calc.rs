@@ -17,7 +17,7 @@ pub fn spawn(shared: Arc<Mutex<Shared>>) {
             deltas.extend_from_slice(s2);
             drop(guard);
 
-            let deltas = deltas.iter().map(|(d, is_z)| (*d * 1000 / TICKS_PER_S.load(std::sync::atomic::Ordering::Relaxed), *is_z)).collect::<Vec<_>>();
+            let deltas = convert_deltas(&deltas);
             if deltas.len() < 2 {
                 info!("C'mon, smash these buttons!");
                 continue;
@@ -95,6 +95,10 @@ pub fn spawn(shared: Arc<Mutex<Shared>>) {
     });
 }
 
+pub fn convert_deltas(deltas: &[(u64, bool)]) -> Vec<(u64, bool)> {
+    deltas.iter().map(|(d, is_z)| (*d * 1000 / TICKS_PER_S.load(std::sync::atomic::Ordering::Relaxed), *is_z)).collect::<Vec<_>>()
+}
+
 pub struct Stats {
     pub ur: f64,
     pub bpm: f64,
@@ -107,7 +111,7 @@ impl Debug for Stats {
     }
 }
 
-fn calc_stats_windows(deltas: &[(u64, bool)], window: u64, step: u64) -> Vec<Stats> {
+pub fn calc_stats_windows(deltas: &[(u64, bool)], window: u64, step: u64) -> Vec<Stats> {
     let mut stats = Vec::with_capacity((deltas.len() as u64 - window) as usize / step as usize);
     let mut sum = None;
     for i in 0..(deltas.len() as u64 - window) / step {
@@ -130,7 +134,7 @@ fn calc_stats_windows(deltas: &[(u64, bool)], window: u64, step: u64) -> Vec<Sta
     stats
 }
 
-fn calc_stats(deltas: &[(u64, bool)], sum: u64) -> Stats {
+pub fn calc_stats(deltas: &[(u64, bool)], sum: u64) -> Stats {
     let window = deltas.len() as u64;
     let avg = sum / window;
 
