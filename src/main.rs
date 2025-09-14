@@ -8,7 +8,6 @@ use std::time::Duration;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, DeviceEvents};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::window::{Fullscreen, Window, WindowAttributes, WindowButtons, WindowId};
 use log::{info, Level};
 use ringbuf::consumer::Consumer;
@@ -48,7 +47,6 @@ fn main() {
     let mut app = App::new(shared);
 
     let ev_loop = winit::event_loop::EventLoopBuilder::default()
-        .with_any_thread(false)
         .build().unwrap();
 
 
