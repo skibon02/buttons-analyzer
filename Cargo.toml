@@ -1,0 +1,11 @@
+[package]
+name = "osu-buttons"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.30.12"
+log = "0.4.28"
+simple_logger = "5.0.0"
+ringbuf = "0.4.8"
+sparkles-core = "0.1.8"
