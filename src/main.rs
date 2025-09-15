@@ -1,19 +1,25 @@
 mod calc;
 pub mod export;
-
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::{mem, thread};
+use std::mem::{replace, take};
 use std::time::Duration;
-use winit::event::{DeviceEvent, DeviceId, WindowEvent};
+use cpal::{BufferSize, Sample, Stream, StreamConfig};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use winit::event::{WindowEvent};
 use winit::event_loop::{ActiveEventLoop, DeviceEvents};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowButtons, WindowId};
-use log::{info, Level};
+use winit::platform::x11::EventLoopBuilderExtX11;
+use winit::window::{Window, WindowAttributes, WindowId};
+use log::{error, info, Level};
 use ringbuf::consumer::Consumer;
 use ringbuf::LocalRb;
 use ringbuf::storage::Heap;
 use ringbuf::traits::RingBuffer;
+use rodio::{ChannelCount, Decoder, Source};
 use sparkles_core::{Timestamp, TimestampProvider};
 use crate::calc::spawn;
 use crate::export::export_cur_stats;
@@ -58,15 +64,70 @@ struct App {
     shared: Arc<Mutex<Shared>>,
     prev_tm: u64,
     ticks_per_s: u64,
+
+    stream: Stream,
 }
 
+static RESTART: AtomicBool = AtomicBool::new(false);
 impl App {
     pub fn new(shared: Arc<Mutex<Shared>>) -> Self {
+        let file = File::open("normal-hitnormal.ogg").unwrap();
+        let decoded =  Decoder::try_from(file).unwrap();
+        let sr = decoded.sample_rate();
+        let channels = decoded.channels();
+        let audio_data: Vec<f32> = decoded.map(|v| v * 0.3).collect();
+        let mut pos = audio_data.len();
+
+        let host = cpal::default_host();
+        info!("Using audio host: {}", host.id().name());
+        // let devices = host.output_devices().unwrap();
+        // let device = devices.into_iter().find(|d| d.name().unwrap().contains("pipewire")).unwrap();
+        let device = host.default_output_device().unwrap();
+        info!("Using output device: {}", device.name().unwrap());
+
+        // for cfg in device.supported_output_configs().unwrap() {
+        //     info!("  {:?}", cfg);
+        // }
+
+        let config = StreamConfig {
+            channels,
+            sample_rate: cpal::SampleRate(sr),
+            buffer_size: BufferSize::Fixed(256),
+        };
+
+        // let sin_440 = (0..).map(|x| {
+        //     let v = ((x as f32) * 440.0 * 2.0 * std::f32::consts::PI / sr as f32).sin();
+        //     v * 0.1
+        // });
+        let stream = device.build_output_stream(
+            &config,
+            move |data: &mut [f32], i: &cpal::OutputCallbackInfo| {
+                if RESTART.swap(false, Ordering::Relaxed) {
+                    pos = 0;
+                }
+                for dst in data {
+                    if pos < audio_data.len() {
+                        *dst = audio_data[pos];
+                        pos += 1;
+                    } else {
+                        *dst = 0.0;
+                    }
+                }
+            },
+            move |err| {
+                error!("Stream error: {}", err);
+            },
+            None
+        ).unwrap();
+
+
         Self {
             win: None,
             shared,
             prev_tm: 0,
-            ticks_per_s: TICKS_PER_S.load(Ordering::Relaxed)
+            ticks_per_s: TICKS_PER_S.load(Ordering::Relaxed),
+
+            stream
         }
     }
 }
@@ -94,6 +155,7 @@ impl winit::application::ApplicationHandler for App {
         } = event {
             if let PhysicalKey::Code(KeyCode::KeyZ) | PhysicalKey::Code(KeyCode::KeyX) =  ev.physical_key {
                 if ev.state.is_pressed() {
+                    RESTART.store(true, Ordering::Relaxed);
                     if self.prev_tm != 0 {
                         let is_z = matches!(ev.physical_key, PhysicalKey::Code(KeyCode::KeyZ));
                         self.shared.lock().unwrap().last_presses.push_overwrite((tm - self.prev_tm, is_z));
