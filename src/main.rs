@@ -12,7 +12,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use winit::event::{WindowEvent};
 use winit::event_loop::{ActiveEventLoop, DeviceEvents};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::platform::x11::EventLoopBuilderExtX11;
 use winit::window::{Window, WindowAttributes, WindowId};
 use log::{error, info, Level};
 use ringbuf::consumer::Consumer;
@@ -65,6 +64,9 @@ struct App {
     prev_tm: u64,
     ticks_per_s: u64,
 
+    release_x_tm: u64,
+    release_z_tm: u64,
+
     stream: Stream,
 }
 
@@ -75,7 +77,7 @@ impl App {
         let decoded =  Decoder::try_from(file).unwrap();
         let sr = decoded.sample_rate();
         let channels = decoded.channels();
-        let audio_data: Vec<f32> = decoded.map(|v| v * 0.3).collect();
+        let audio_data: Vec<f32> = decoded.map(|v| v * 0.2).collect();
         let mut pos = audio_data.len();
 
         let host = cpal::default_host();
@@ -85,14 +87,14 @@ impl App {
         let device = host.default_output_device().unwrap();
         info!("Using output device: {}", device.name().unwrap());
 
-        // for cfg in device.supported_output_configs().unwrap() {
-        //     info!("  {:?}", cfg);
-        // }
+        for cfg in device.supported_output_configs().unwrap() {
+            info!("  {:?}", cfg);
+        }
 
         let config = StreamConfig {
             channels,
-            sample_rate: cpal::SampleRate(sr),
-            buffer_size: BufferSize::Fixed(256),
+            sample_rate: cpal::SampleRate(48000),
+            buffer_size: BufferSize::Fixed(300),
         };
 
         // let sin_440 = (0..).map(|x| {
@@ -119,13 +121,18 @@ impl App {
             },
             None
         ).unwrap();
+        stream.play().unwrap();
 
+        let now = Timestamp::now();
 
         Self {
             win: None,
             shared,
             prev_tm: 0,
             ticks_per_s: TICKS_PER_S.load(Ordering::Relaxed),
+
+            release_x_tm: now,
+            release_z_tm: now,
 
             stream
         }
@@ -151,16 +158,41 @@ impl winit::application::ApplicationHandler for App {
 
         if let WindowEvent::KeyboardInput {
             event: ev,
+
             ..
         } = event {
+            if ev.repeat {
+                return;
+            }
             if let PhysicalKey::Code(KeyCode::KeyZ) | PhysicalKey::Code(KeyCode::KeyX) =  ev.physical_key {
                 if ev.state.is_pressed() {
                     RESTART.store(true, Ordering::Relaxed);
                     if self.prev_tm != 0 {
                         let is_z = matches!(ev.physical_key, PhysicalKey::Code(KeyCode::KeyZ));
-                        self.shared.lock().unwrap().last_presses.push_overwrite((tm - self.prev_tm, is_z));
+                        let release_time = if is_z {
+                            self.release_z_tm
+                        }
+                        else {
+                            self.release_x_tm
+                        };
+
+                        let thr = 0.03;
+                        let elapsed_s = (tm - release_time) as f32 / TICKS_PER_S.load(Ordering::Relaxed) as f32;
+                        // info!("Elapsed: {}ms", elapsed_s * 1000.0);
+                        if elapsed_s > thr {
+                            self.shared.lock().unwrap().last_presses.push_overwrite((tm - self.prev_tm, is_z));
+                        }
                     }
                     self.prev_tm = tm;
+                }
+                else {
+                    let is_z = matches!(ev.physical_key, PhysicalKey::Code(KeyCode::KeyZ));
+                    if is_z {
+                        self.release_z_tm = tm;
+                    }
+                    else {
+                        self.release_x_tm = tm;
+                    }
                 }
             }
             else if let PhysicalKey::Code(KeyCode::Backquote) = ev.physical_key {
