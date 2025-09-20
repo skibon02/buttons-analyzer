@@ -14,6 +14,7 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 import io
 import base64
+import hashlib
 
 class WebCSVMonitor:
     def __init__(self):
@@ -23,6 +24,9 @@ class WebCSVMonitor:
         # Словарь для хранения данных файлов
         self.file_data = {}
         self.max_files = 20
+        
+        # Кеш изображений для улучшения производительности
+        self.image_cache = {}
         
         # Загрузка имен
         self.names_file = "names.json"
@@ -229,7 +233,16 @@ class WebCSVMonitor:
             print(f"Ошибка загрузки {file_path}: {e}")
 
     def create_plot_image(self, data, filename):
-        """Создание изображения графика с 4 подграфиками"""
+        """Создание изображения графика с 4 подграфиками с кешированием"""
+        
+        # Создаем ключ кеша на основе данных и времени модификации
+        cache_key = self._generate_cache_key(data, filename)
+        
+        # Проверяем кеш
+        if cache_key in self.image_cache:
+            print(f"Используем кешированное изображение для {filename}")
+            return self.image_cache[cache_key]
+        
         print(f"Создаю график для {filename}")
         
         if data.get('best_data'):
@@ -409,6 +422,24 @@ class WebCSVMonitor:
                 ur_max = max(250, best_data['ur_data']['UR'].max() * 1.1) if not best_data['ur_data'].empty else 250
                 ax4.set_ylim(0, ur_max)
                 
+                # Добавляем метки для UR на 100 и 200 нажатий
+                ur_100 = best_data['ur_data'][best_data['ur_data']['Window Size'] == 100]['UR']
+                ur_200 = best_data['ur_data'][best_data['ur_data']['Window Size'] == 200]['UR']
+                
+                if not ur_100.empty:
+                    ur_100_val = ur_100.iloc[0]
+                    ax4.axhline(y=ur_100_val, color='#40e0d0', linestyle=':', linewidth=2, alpha=0.8)
+                    ax4.text(0.02, ur_100_val + ur_max*0.02, f'UR@100: {ur_100_val:.1f}',
+                            transform=ax4.get_yaxis_transform(),
+                            color='#40e0d0', fontsize=11, weight='bold', alpha=0.9)
+                
+                if not ur_200.empty:
+                    ur_200_val = ur_200.iloc[0]
+                    ax4.axhline(y=ur_200_val, color='#40e0d0', linestyle='-.', linewidth=2, alpha=0.8)
+                    ax4.text(0.02, ur_200_val + ur_max*0.02, f'UR@200: {ur_200_val:.1f}',
+                            transform=ax4.get_yaxis_transform(),
+                            color='#40e0d0', fontsize=11, weight='bold', alpha=0.9)
+                
                 # Добавляем ZX как вторичную метрику
                 if 'ZX' in best_data['ur_data'].columns:
                     ax4_xz = ax4.twinx()
@@ -445,11 +476,53 @@ class WebCSVMonitor:
             plt.close(fig)
 
             print(f"График создан успешно, размер: {len(plot_data)} байт")
-            return base64.b64encode(plot_data).decode()
+            plot_base64 = base64.b64encode(plot_data).decode()
+            
+            # Сохраняем в кеш
+            self.image_cache[cache_key] = plot_base64
+            
+            # Ограничиваем размер кеша (удаляем старые записи если их слишком много)
+            if len(self.image_cache) > 50:
+                # Удаляем 10 самых старых записей
+                old_keys = list(self.image_cache.keys())[:10]
+                for old_key in old_keys:
+                    del self.image_cache[old_key]
+            
+            return plot_base64
 
         except Exception as e:
             print(f"Ошибка создания графика: {e}")
             return ""
+
+    def _generate_cache_key(self, data, filename):
+        """Генерация ключа кеша на основе данных файла"""
+        try:
+            # Создаем строку для хеширования из основных данных
+            cache_data = {
+                'mtime': data.get('mtime', 0),
+                'filename': filename,
+                'id': data.get('id', ''),
+            }
+            
+            # Добавляем размеры данных для быстрого сравнения
+            if data.get('best_data'):
+                cache_data['best_sizes'] = {
+                    'bpm': len(data['best_data']['bpm_data']),
+                    'ur': len(data['best_data']['ur_data']),
+                    'xz': len(data['best_data']['xz_data'])
+                }
+            
+            if data.get('history_data') is not None:
+                cache_data['history_size'] = len(data['history_data'])
+            
+            # Создаем хеш из JSON представления данных
+            cache_str = json.dumps(cache_data, sort_keys=True)
+            return hashlib.md5(cache_str.encode()).hexdigest()
+            
+        except Exception as e:
+            print(f"Ошибка генерации ключа кеша: {e}")
+            # Если не можем создать хеш, возвращаем уникальный ключ на основе времени
+            return f"fallback_{int(time.time() * 1000000)}"
 
     def generate_initial_html(self):
         """Создание начальной HTML страницы"""
@@ -640,6 +713,25 @@ class WebCSVMonitor:
         .delete-btn:hover {{
             opacity: 1;
         }}
+        .ur-stats {{
+            background-color: #404040;
+            border-radius: 5px;
+            padding: 8px;
+            margin: 10px 0;
+            text-align: center;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+        }}
+        .ur-value {{
+            color: #40e0d0;
+            font-weight: bold;
+            font-size: 14px;
+            padding: 4px 8px;
+            background-color: #2b2b2b;
+            border-radius: 3px;
+            border: 1px solid #40e0d0;
+        }}
     </style>
 </head>
 <body>
@@ -726,9 +818,22 @@ class WebCSVMonitor:
                         plotDiv.className = 'plot-container';
                         plotDiv.dataset.plotId = plot.id;
                         plotDiv.dataset.timestamp = plot.timestamp;
+                        let urInfo = '';
+                        if (plot.ur_100 !== null || plot.ur_200 !== null) {{
+                            urInfo = '<div class="ur-stats">';
+                            if (plot.ur_100 !== null) {{
+                                urInfo += `<span class="ur-value">UR@100: ${{plot.ur_100.toFixed(1)}}</span>`;
+                            }}
+                            if (plot.ur_200 !== null) {{
+                                urInfo += `<span class="ur-value">UR@200: ${{plot.ur_200.toFixed(1)}}</span>`;
+                            }}
+                            urInfo += '</div>';
+                        }}
+                        
                         plotDiv.innerHTML = `
                             <h3 class="plot-title" contenteditable="true" onblur="renameSession('${{plot.id}}', this.innerText)" onfocus="selectText(this)">${{plot.name}}</h3>
                             <button class="delete-btn" onclick="deleteSession('${{plot.id}}')" title="Удалить сессию">✗</button>
+                            ${{urInfo}}
                             <img class="plot-image" src="data:image/png;base64,${{plot.image}}" alt="Plot for ${{plot.filename}}">
                             <div class="timestamp">Создан: ${{plot.timestamp}}</div>
                         `;
@@ -822,12 +927,26 @@ class WebCSVMonitor:
                 plot_base64 = self.create_plot_image(file_data, custom_name)
                 mtime_str = datetime.fromtimestamp(file_data['mtime']).strftime("%Y-%m-%d %H:%M:%S")
                 
+                # Извлекаем UR@100 и UR@200 если они есть
+                ur_100 = None
+                ur_200 = None
+                if file_data.get('best_data') and not file_data['best_data']['ur_data'].empty:
+                    ur_data = file_data['best_data']['ur_data']
+                    ur_100_row = ur_data[ur_data['Window Size'] == 100]['UR']
+                    ur_200_row = ur_data[ur_data['Window Size'] == 200]['UR']
+                    if not ur_100_row.empty:
+                        ur_100 = ur_100_row.iloc[0]
+                    if not ur_200_row.empty:
+                        ur_200 = ur_200_row.iloc[0]
+                
                 data["plots"].append({
                     "id": session_id,
                     "filename": file_data['filename'], # original filename
                     "name": custom_name, # custom name
                     "image": plot_base64,
-                    "timestamp": mtime_str
+                    "timestamp": mtime_str,
+                    "ur_100": ur_100,
+                    "ur_200": ur_200
                 })
             except Exception as e:
                 print(f"Ошибка создания графика для {file_data['filename']}: {e}")
@@ -864,9 +983,19 @@ class WebCSVMonitor:
                         deleted_count += 1
                         print(f"Deleted: {file_path}")
             
-            # Удаляем из кэша
+            # Удаляем из кэша данных
             if file_id in self.file_data:
                 del self.file_data[file_id]
+            
+            # Очищаем кеш изображений для удаленных файлов
+            cache_keys_to_remove = []
+            for cache_key in self.image_cache.keys():
+                # Если ключ кеша содержит ID удаленного файла, удаляем его
+                if file_id in cache_key:
+                    cache_keys_to_remove.append(cache_key)
+            
+            for cache_key in cache_keys_to_remove:
+                del self.image_cache[cache_key]
             
             return deleted_count > 0
             
