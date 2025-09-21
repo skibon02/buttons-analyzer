@@ -42,17 +42,6 @@ pub fn spawn(shared: Arc<Mutex<Shared>>) {
             info!("");
             info!("");
             info!("Total: {:?}", total_stats);
-            if deltas.len() >= 4 {
-                let win_4_stats = calc_stats_windows(&deltas, 4, 1);
-                let best_4_bpm = win_4_stats.iter().max_by(|a, b| a.bpm.partial_cmp(&b.bpm).unwrap());
-                if let Some(best_4_bpm) = best_4_bpm {
-                    let best_4_ur = win_4_stats.iter().min_by(|a, b| a.ur.partial_cmp(&b.ur).unwrap()).unwrap();
-
-                    info!("Best 4 BPM: {:?}", best_4_bpm);
-                    info!("Best 4 UR: {:?}", best_4_ur);
-                }
-            }
-
             if deltas.len() >= 20 {
                 let win_20_stats = calc_stats_windows(&deltas, 20, 1);
                 let best_20_bpm = win_20_stats.iter().max_by(|a, b| a.bpm.partial_cmp(&b.bpm).unwrap());
@@ -61,6 +50,17 @@ pub fn spawn(shared: Arc<Mutex<Shared>>) {
 
                     info!("Best 20 BPM: {:?}", best_20_bpm);
                     info!("Best 20 UR: {:?}", best_20_ur);
+                }
+            }
+
+            if deltas.len() >= 200 {
+                let win_200_stats = calc_stats_windows(&deltas, 200, 5);
+                let best_200_bpm = win_200_stats.iter().max_by(|a, b| a.bpm.partial_cmp(&b.bpm).unwrap());
+                if let Some(best_200_bpm) = best_200_bpm {
+                    let best_200_ur = win_200_stats.iter().min_by(|a, b| a.ur.partial_cmp(&b.ur).unwrap()).unwrap();
+
+                    info!("Best 200 BPM: {:?}", best_200_bpm);
+                    info!("Best 200 UR: {:?}", best_200_ur);
                 }
             }
 

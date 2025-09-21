@@ -20,22 +20,23 @@ class WebCSVMonitor:
     def __init__(self):
         # Стили для темной темы
         self.setup_matplotlib_styles()
-        
+
         # Словарь для хранения данных файлов
         self.file_data = {}
         self.max_files = 20
-        
-        # Кеш изображений для улучшения производительности
-        self.image_cache = {}
-        
+
+        # Папка для кеша изображений
+        self.cache_dir = Path("cache")
+        self.cache_dir.mkdir(exist_ok=True)
+
         # Загрузка имен
         self.names_file = "names.json"
         self.names = self.load_names()
-        
+
         # Создаем директории
         os.makedirs("samples", exist_ok=True)
         os.makedirs("web_output", exist_ok=True)
-        
+
         # Создаем начальную HTML страницу
         self.generate_initial_html()
 
@@ -234,14 +235,22 @@ class WebCSVMonitor:
 
     def create_plot_image(self, data, filename):
         """Создание изображения графика с 4 подграфиками с кешированием"""
-        
+
         # Создаем ключ кеша на основе данных и времени модификации
         cache_key = self._generate_cache_key(data, filename)
-        
-        # Проверяем кеш
-        if cache_key in self.image_cache:
-            print(f"Используем кешированное изображение для {filename}")
-            return self.image_cache[cache_key]
+        cache_file = self.cache_dir / f"{cache_key}.txt"
+
+        # Проверяем кеш в файле
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    cached_base64 = f.read().strip()
+                print(f"Используем кешированное изображение для {filename}")
+                return cached_base64
+            except Exception as e:
+                print(f"Ошибка чтения кеша для {filename}: {e}")
+                # Удаляем поврежденный файл кеша
+                cache_file.unlink(missing_ok=True)
         
         print(f"Создаю график для {filename}")
         
@@ -477,17 +486,18 @@ class WebCSVMonitor:
 
             print(f"График создан успешно, размер: {len(plot_data)} байт")
             plot_base64 = base64.b64encode(plot_data).decode()
-            
-            # Сохраняем в кеш
-            self.image_cache[cache_key] = plot_base64
-            
-            # Ограничиваем размер кеша (удаляем старые записи если их слишком много)
-            if len(self.image_cache) > 50:
-                # Удаляем 10 самых старых записей
-                old_keys = list(self.image_cache.keys())[:10]
-                for old_key in old_keys:
-                    del self.image_cache[old_key]
-            
+
+            # Сохраняем в файл кеша
+            try:
+                with open(cache_file, 'w') as f:
+                    f.write(plot_base64)
+                print(f"График сохранен в кеш: {cache_file}")
+            except Exception as e:
+                print(f"Ошибка сохранения в кеш для {filename}: {e}")
+
+            # Ограничиваем размер кеша (удаляем старые файлы если их слишком много)
+            self._cleanup_cache()
+
             return plot_base64
 
         except Exception as e:
@@ -503,7 +513,7 @@ class WebCSVMonitor:
                 'filename': filename,
                 'id': data.get('id', ''),
             }
-            
+
             # Добавляем размеры данных для быстрого сравнения
             if data.get('best_data'):
                 cache_data['best_sizes'] = {
@@ -511,18 +521,62 @@ class WebCSVMonitor:
                     'ur': len(data['best_data']['ur_data']),
                     'xz': len(data['best_data']['xz_data'])
                 }
-            
+
             if data.get('history_data') is not None:
                 cache_data['history_size'] = len(data['history_data'])
-            
+
             # Создаем хеш из JSON представления данных
             cache_str = json.dumps(cache_data, sort_keys=True)
             return hashlib.md5(cache_str.encode()).hexdigest()
-            
+
         except Exception as e:
             print(f"Ошибка генерации ключа кеша: {e}")
             # Если не можем создать хеш, возвращаем уникальный ключ на основе времени
             return f"fallback_{int(time.time() * 1000000)}"
+
+    def _cleanup_cache(self):
+        """Очистка старых файлов кеша"""
+        try:
+            cache_files = list(self.cache_dir.glob("*.txt"))
+
+            # Если файлов кеша больше 100, удаляем самые старые
+            if len(cache_files) > 100:
+                # Сортируем по времени модификации (старые сначала)
+                cache_files.sort(key=lambda f: f.stat().st_mtime)
+
+                # Удаляем 20 самых старых файлов
+                files_to_remove = cache_files[:20]
+                for cache_file in files_to_remove:
+                    try:
+                        cache_file.unlink()
+                        print(f"Удален старый файл кеша: {cache_file.name}")
+                    except Exception as e:
+                        print(f"Ошибка удаления файла кеша {cache_file}: {e}")
+
+        except Exception as e:
+            print(f"Ошибка очистки кеша: {e}")
+
+    def _cleanup_cache_for_session(self, session_id):
+        """Очистка файлов кеша для конкретной сессии"""
+        try:
+            cache_files = list(self.cache_dir.glob("*.txt"))
+            removed_count = 0
+
+            for cache_file in cache_files:
+                try:
+                    # Читаем содержимое файла, чтобы проверить связь с сессией
+                    # Альтернативно можно использовать имя файла, если в нём есть ID
+                    # Но для надежности удаляем все файлы кеша при удалении сессии
+                    cache_file.unlink()
+                    removed_count += 1
+                except Exception as e:
+                    print(f"Ошибка удаления файла кеша {cache_file}: {e}")
+
+            if removed_count > 0:
+                print(f"Удалено {removed_count} файлов кеша для сессии {session_id}")
+
+        except Exception as e:
+            print(f"Ошибка очистки кеша для сессии {session_id}: {e}")
 
     def generate_initial_html(self):
         """Создание начальной HTML страницы"""
@@ -591,7 +645,7 @@ class WebCSVMonitor:
 </head>
 <body>
     <div class="header">
-        <h1>🎯 BPM/UR Stats Monitor</h1>
+        <h1>BPM/UR Stats Analyzer</h1>
         <p><span class="bpm-color">● BPM Performance</span> | <span class="ur-color">● UR Performance</span> | <span class="xz-color">● ZX Balance</span></p>
     </div>
 
@@ -613,7 +667,7 @@ class WebCSVMonitor:
             f.write(html_content)
 
     def generate_html_page(self):
-        """Генерация HTML страницы"""
+        """Генерация HTML страницы с вкладками"""
         # Сортируем файлы по времени изменения (новые сверху)
         sorted_files = sorted(self.file_data.items(),
                             key=lambda x: x[1]['mtime'],
@@ -644,6 +698,58 @@ class WebCSVMonitor:
             text-align: center;
             margin-bottom: 30px;
         }}
+        .stats {{
+            background-color: #404040;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            text-align: center;
+        }}
+        .bpm-color {{ color: #ff69b4; }}
+        .ur-color {{ color: #40e0d0; }}
+        .xz-color {{ color: #cc8800; }}
+
+        /* Стили для вкладок */
+        .tabs {{
+            display: flex;
+            background-color: #363636;
+            border-radius: 8px 8px 0 0;
+            margin-bottom: 0;
+            overflow: hidden;
+        }}
+        .tab {{
+            flex: 1;
+            padding: 15px 20px;
+            background-color: #363636;
+            color: #cccccc;
+            cursor: pointer;
+            border: none;
+            font-size: 16px;
+            transition: background-color 0.3s;
+            text-align: center;
+        }}
+        .tab:hover {{
+            background-color: #404040;
+        }}
+        .tab.active {{
+            background-color: #2b2b2b;
+            color: #ffaa44;
+            font-weight: bold;
+        }}
+        .tab-content {{
+            background-color: #2b2b2b;
+            border-radius: 0 0 8px 8px;
+            padding: 20px;
+            min-height: 500px;
+        }}
+        .tab-pane {{
+            display: none;
+        }}
+        .tab-pane.active {{
+            display: block;
+        }}
+
+        /* Стили для сессий */
         .grid {{
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -672,16 +778,6 @@ class WebCSVMonitor:
             margin-top: 10px;
             text-align: center;
         }}
-        .stats {{
-            background-color: #404040;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-            text-align: center;
-        }}
-        .bpm-color {{ color: #ff69b4; }}
-        .ur-color {{ color: #40e0d0; }}
-        .xz-color {{ color: #cc8800; }}
         .plot-title {{
             text-align: center;
             margin: 5px 0 10px 0;
@@ -721,40 +817,157 @@ class WebCSVMonitor:
             text-align: center;
             display: flex;
             justify-content: center;
-            gap: 15px;
+            gap: 10px;
+            flex-wrap: wrap;
         }}
         .ur-value {{
             color: #40e0d0;
             font-weight: bold;
-            font-size: 14px;
+            font-size: 13px;
             padding: 4px 8px;
             background-color: #2b2b2b;
             border-radius: 3px;
             border: 1px solid #40e0d0;
+            transition: all 0.3s ease;
+        }}
+        .ur-value.record {{
+            background: linear-gradient(45deg, #ffd700, #ffed4a);
+            color: #2b2b2b;
+            border: 2px solid #ffd700;
+            box-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+            animation: glow 2s ease-in-out infinite alternate;
+        }}
+        @keyframes glow {{
+            from {{ box-shadow: 0 0 5px rgba(255, 215, 0, 0.5); }}
+            to {{ box-shadow: 0 0 15px rgba(255, 215, 0, 0.8); }}
+        }}
+
+        /* Стили для таблицы рекордов */
+        .records-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background-color: #363636;
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        .records-table th, .records-table td {{
+            padding: 12px;
+            text-align: center;
+            border-bottom: 1px solid #555;
+        }}
+        .records-table th {{
+            background-color: #404040;
+            color: #ffaa44;
+            font-weight: bold;
+        }}
+        .records-table tr:hover {{
+            background-color: #404040;
+        }}
+        .records-charts {{
+            text-align: center;
+            margin: 20px 0;
+        }}
+        .records-charts img {{
+            max-width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        }}
+        .waiting {{
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }}
+        .loading {{
+            animation: pulse 2s infinite;
+        }}
+        @keyframes pulse {{
+            0% {{ opacity: 1; }}
+            50% {{ opacity: 0.5; }}
+            100% {{ opacity: 1; }}
         }}
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🎯 BPM/UR Stats Monitor</h1>
+        <h1>BPM/UR Stats Analyzer</h1>
         <div class="stats">
             <span class="bpm-color">● BPM Performance</span> |
             <span class="ur-color">● UR Performance</span> |
-            <span class="xz-color">● ZX Balance</span> | 
-            Обновлено: {datetime.now().strftime("%H:%M:%S")} | 
+            <span class="xz-color">● ZX Balance</span> |
+            Обновлено: {datetime.now().strftime("%H:%M:%S")} |
             Файлов: {len(files_to_show)} | v{int(datetime.now().timestamp())}
         </div>
     </div>
-    
-    <div class="grid" id="plots-container">
-        <div class="waiting">
-            <h2 class="loading">Загрузка данных...</h2>
-            <p>Ожидание графиков</p>
+
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('sessions')">Сессии</button>
+        <button class="tab" onclick="showTab('records')">Таблица рекордов</button>
+    </div>
+
+    <div class="tab-content">
+        <!-- Вкладка сессий -->
+        <div id="sessions-tab" class="tab-pane active">
+            <div class="grid" id="plots-container">
+                <div class="waiting">
+                    <h2 class="loading">Загрузка данных...</h2>
+                    <p>Ожидание графиков</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Вкладка рекордов -->
+        <div id="records-tab" class="tab-pane">
+            <div class="waiting" id="records-waiting">
+                <h2 class="loading">Загрузка рекордов...</h2>
+                <p>Анализ данных</p>
+            </div>
+            <div id="records-content" style="display: none;">
+                <div class="records-charts">
+                    <img id="records-charts-img" src="" alt="Графики рекордов">
+                </div>
+                <table class="records-table" id="records-table">
+                    <thead>
+                        <tr>
+                            <th>BPM (±5)</th>
+                            <th>Записей</th>
+                            <th>Лучший UR@100</th>
+                            <th>Лучший UR@200</th>
+                            <th>Лучший UR@500</th>
+                            <th>Лучший UR@1000</th>
+                        </tr>
+                    </thead>
+                    <tbody id="records-tbody">
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
-    
+
     <script>
         let lastVersion = 0;
+        let lastRecordsUpdate = 0;
+        let currentTab = 'sessions';
+
+        function showTab(tabName) {{
+            // Скрываем все вкладки
+            document.querySelectorAll('.tab-pane').forEach(pane => {{
+                pane.classList.remove('active');
+            }});
+            document.querySelectorAll('.tab').forEach(tab => {{
+                tab.classList.remove('active');
+            }});
+
+            // Показываем нужную вкладку
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+            currentTab = tabName;
+
+            // Загружаем данные для вкладки рекордов при первом открытии
+            if (tabName === 'records') {{
+                updateRecords();
+            }}
+        }}
 
         function selectText(element) {{
             const range = document.createRange();
@@ -763,19 +976,19 @@ class WebCSVMonitor:
             selection.removeAllRanges();
             selection.addRange(range);
         }}
-        
+
         async function updateData() {{
             try {{
                 const response = await fetch('/api/data');
                 const data = await response.json();
 
                 if (data.version <= lastVersion) {{
-                    return; // No changes, do nothing
+                    return;
                 }}
                 lastVersion = data.version;
 
                 // Remove waiting message
-                const waitingDiv = document.querySelector('.waiting');
+                const waitingDiv = document.querySelector('#sessions-tab .waiting');
                 if (waitingDiv) {{
                     waitingDiv.remove();
                 }}
@@ -784,8 +997,8 @@ class WebCSVMonitor:
                 document.querySelector('.stats').innerHTML = `
                     <span class="bpm-color">● BPM Performance</span> |
                     <span class="ur-color">● UR Performance</span> |
-                    <span class="xz-color">● ZX Balance</span> | 
-                    Обновлено: ${{data.timestamp}} | 
+                    <span class="xz-color">● ZX Balance</span> |
+                    Обновлено: ${{data.timestamp}} |
                     Файлов: ${{data.files_count}} | v${{data.version}}
                 `;
 
@@ -800,36 +1013,43 @@ class WebCSVMonitor:
                     }}
                 }}
 
-                // Add or update plots, and ensure correct order
-                data.plots.reverse().forEach(plot => {{ // Iterate oldest to newest
+                // Add or update plots
+                data.plots.reverse().forEach(plot => {{
                     let plotDiv = grid.querySelector(`[data-plot-id="${{plot.id}}"]`);
                     if (plotDiv) {{
-                        // Plot exists, check if it needs updating
                         const existingTimestamp = plotDiv.dataset.timestamp;
                         if (existingTimestamp !== plot.timestamp) {{
-                            // Update image and timestamp
                             plotDiv.querySelector('.plot-image').src = `data:image/png;base64,${{plot.image}}`;
                             plotDiv.querySelector('.timestamp').innerText = `Создан: ${{plot.timestamp}}`;
                             plotDiv.dataset.timestamp = plot.timestamp;
                         }}
                     }} else {{
-                        // New plot, create it
                         plotDiv = document.createElement('div');
                         plotDiv.className = 'plot-container';
                         plotDiv.dataset.plotId = plot.id;
                         plotDiv.dataset.timestamp = plot.timestamp;
                         let urInfo = '';
-                        if (plot.ur_100 !== null || plot.ur_200 !== null) {{
+                        if (plot.ur_100 !== null || plot.ur_200 !== null || plot.ur_500 !== null || plot.ur_1000 !== null) {{
                             urInfo = '<div class="ur-stats">';
                             if (plot.ur_100 !== null) {{
-                                urInfo += `<span class="ur-value">UR@100: ${{plot.ur_100.toFixed(1)}}</span>`;
+                                const recordClass = plot.ur_100_is_record ? ' record' : '';
+                                urInfo += `<span class="ur-value${{recordClass}}">UR@100: ${{plot.ur_100.toFixed(1)}}</span>`;
                             }}
                             if (plot.ur_200 !== null) {{
-                                urInfo += `<span class="ur-value">UR@200: ${{plot.ur_200.toFixed(1)}}</span>`;
+                                const recordClass = plot.ur_200_is_record ? ' record' : '';
+                                urInfo += `<span class="ur-value${{recordClass}}">UR@200: ${{plot.ur_200.toFixed(1)}}</span>`;
+                            }}
+                            if (plot.ur_500 !== null) {{
+                                const recordClass = plot.ur_500_is_record ? ' record' : '';
+                                urInfo += `<span class="ur-value${{recordClass}}">UR@500: ${{plot.ur_500.toFixed(1)}}</span>`;
+                            }}
+                            if (plot.ur_1000 !== null) {{
+                                const recordClass = plot.ur_1000_is_record ? ' record' : '';
+                                urInfo += `<span class="ur-value${{recordClass}}">UR@1000: ${{plot.ur_1000.toFixed(1)}}</span>`;
                             }}
                             urInfo += '</div>';
                         }}
-                        
+
                         plotDiv.innerHTML = `
                             <h3 class="plot-title" contenteditable="true" onblur="renameSession('${{plot.id}}', this.innerText)" onfocus="selectText(this)">${{plot.name}}</h3>
                             <button class="delete-btn" onclick="deleteSession('${{plot.id}}')" title="Удалить сессию">✗</button>
@@ -838,7 +1058,6 @@ class WebCSVMonitor:
                             <div class="timestamp">Создан: ${{plot.timestamp}}</div>
                         `;
                     }}
-                    // Move to top
                     grid.insertBefore(plotDiv, grid.firstChild);
                 }});
 
@@ -846,7 +1065,44 @@ class WebCSVMonitor:
                 console.error('Ошибка обновления данных:', error);
             }}
         }}
-        
+
+        async function updateRecords() {{
+            try {{
+                const response = await fetch('/api/records');
+                const data = await response.json();
+
+                // Скрываем ожидание и показываем контент
+                document.getElementById('records-waiting').style.display = 'none';
+                document.getElementById('records-content').style.display = 'block';
+
+                // Обновляем графики
+                if (data.charts) {{
+                    document.getElementById('records-charts-img').src = `data:image/png;base64,${{data.charts}}`;
+                }}
+
+                // Обновляем таблицу
+                const tbody = document.getElementById('records-tbody');
+                tbody.innerHTML = '';
+
+                data.records.forEach(record => {{
+                    const row = tbody.insertRow();
+                    row.innerHTML = `
+                        <td>${{record.bpm_center}}</td>
+                        <td>${{record.count}}</td>
+                        <td>${{record.best_ur_100 !== null ? record.best_ur_100.toFixed(1) : '-'}}</td>
+                        <td>${{record.best_ur_200 !== null ? record.best_ur_200.toFixed(1) : '-'}}</td>
+                        <td>${{record.best_ur_500 !== null ? record.best_ur_500.toFixed(1) : '-'}}</td>
+                        <td>${{record.best_ur_1000 !== null ? record.best_ur_1000.toFixed(1) : '-'}}</td>
+                    `;
+                }});
+
+                lastRecordsUpdate = Date.now();
+
+            }} catch (error) {{
+                console.error('Ошибка обновления рекордов:', error);
+            }}
+        }}
+
         // Функция переименования сессии
         async function renameSession(sessionId, newName) {{
             try {{
@@ -873,14 +1129,17 @@ class WebCSVMonitor:
             if (!confirm('Вы уверены, что хотите удалить эту сессию?')) {{
                 return;
             }}
-            
+
             try {{
                 const response = await fetch(`/api/delete/${{sessionId}}`);
                 if (response.ok) {{
                     console.log(`Сессия ${{sessionId}} удалена`);
-                    // Принудительно обновляем данные
                     lastVersion = 0;
                     updateData();
+                    // Обновляем рекорды если они открыты
+                    if (currentTab === 'records') {{
+                        setTimeout(updateRecords, 1000);
+                    }}
                 }} else {{
                     alert('Ошибка удаления сессии');
                 }}
@@ -889,17 +1148,23 @@ class WebCSVMonitor:
                 alert('Ошибка удаления сессии');
             }}
         }}
-        
-        // Обновляем каждые 2 секунды
-        setInterval(updateData, 2000);
-        
+
+        // Обновляем данные каждые 2 секунды
+        setInterval(() => {{
+            updateData();
+            // Обновляем рекорды раз в 10 секунд если вкладка открыта
+            if (currentTab === 'records' && Date.now() - lastRecordsUpdate > 10000) {{
+                updateRecords();
+            }}
+        }}, 2000);
+
         // Первичная загрузка
         updateData();
     </script>
 </body>
 </html>
 """
-        
+
         # Сохраняем HTML файл
         with open("web_output/index.html", "w", encoding="utf-8") as f:
             f.write(html_content)
@@ -910,14 +1175,17 @@ class WebCSVMonitor:
                             key=lambda x: x[1]['mtime'],
                             reverse=True)
         files_to_show = sorted_files[:self.max_files]
-        
+
+        # Получаем данные рекордов для проверки
+        records_data = self.generate_records_data()
+
         data = {
             "timestamp": datetime.now().strftime("%H:%M:%S"),
             "files_count": len(files_to_show),
             "version": int(datetime.now().timestamp()),
             "plots": []
         }
-        
+
         for file_path, file_data in files_to_show:
             try:
                 session_id = file_data['id']
@@ -926,19 +1194,66 @@ class WebCSVMonitor:
 
                 plot_base64 = self.create_plot_image(file_data, custom_name)
                 mtime_str = datetime.fromtimestamp(file_data['mtime']).strftime("%Y-%m-%d %H:%M:%S")
-                
-                # Извлекаем UR@100 и UR@200 если они есть
+
+                # Извлекаем UR@100, UR@200, UR@500 и UR@1000 если они есть
                 ur_100 = None
                 ur_200 = None
+                ur_500 = None
+                ur_1000 = None
+                ur_100_is_record = False
+                ur_200_is_record = False
+                ur_500_is_record = False
+                ur_1000_is_record = False
+
                 if file_data.get('best_data') and not file_data['best_data']['ur_data'].empty:
                     ur_data = file_data['best_data']['ur_data']
+                    bpm_data = file_data['best_data']['bpm_data']
+
+                    # Определяем BPM окно для этой сессии
+                    session_bpm_window = None
+                    if not bpm_data.empty:
+                        avg_bpm = bpm_data['BPM'].mean()
+                        window_center = round(avg_bpm / 10) * 10
+                        session_bpm_window = window_center
+
                     ur_100_row = ur_data[ur_data['Window Size'] == 100]['UR']
                     ur_200_row = ur_data[ur_data['Window Size'] == 200]['UR']
+                    ur_500_row = ur_data[ur_data['Window Size'] == 500]['UR']
+                    ur_1000_row = ur_data[ur_data['Window Size'] == 1000]['UR']
+
                     if not ur_100_row.empty:
                         ur_100 = ur_100_row.iloc[0]
+                        # Проверяем, является ли это рекордом
+                        if session_bpm_window:
+                            for record in records_data:
+                                if record['center_bpm'] == session_bpm_window and record['best_ur_100'] == ur_100:
+                                    ur_100_is_record = True
+                                    break
+
                     if not ur_200_row.empty:
                         ur_200 = ur_200_row.iloc[0]
-                
+                        if session_bpm_window:
+                            for record in records_data:
+                                if record['center_bpm'] == session_bpm_window and record['best_ur_200'] == ur_200:
+                                    ur_200_is_record = True
+                                    break
+
+                    if not ur_500_row.empty:
+                        ur_500 = ur_500_row.iloc[0]
+                        if session_bpm_window:
+                            for record in records_data:
+                                if record['center_bpm'] == session_bpm_window and record['best_ur_500'] == ur_500:
+                                    ur_500_is_record = True
+                                    break
+
+                    if not ur_1000_row.empty:
+                        ur_1000 = ur_1000_row.iloc[0]
+                        if session_bpm_window:
+                            for record in records_data:
+                                if record['center_bpm'] == session_bpm_window and record['best_ur_1000'] == ur_1000:
+                                    ur_1000_is_record = True
+                                    break
+
                 data["plots"].append({
                     "id": session_id,
                     "filename": file_data['filename'], # original filename
@@ -946,12 +1261,158 @@ class WebCSVMonitor:
                     "image": plot_base64,
                     "timestamp": mtime_str,
                     "ur_100": ur_100,
-                    "ur_200": ur_200
+                    "ur_200": ur_200,
+                    "ur_500": ur_500,
+                    "ur_1000": ur_1000,
+                    "ur_100_is_record": ur_100_is_record,
+                    "ur_200_is_record": ur_200_is_record,
+                    "ur_500_is_record": ur_500_is_record,
+                    "ur_1000_is_record": ur_1000_is_record
                 })
             except Exception as e:
                 print(f"Ошибка создания графика для {file_data['filename']}: {e}")
-        
+
         return json.dumps(data)
+
+    def generate_records_data(self):
+        """Генерация данных для таблицы рекордов с группировкой по BPM окнам"""
+        bpm_windows = {}
+
+        # Группируем все записи по BPM окнам +-5
+        for file_path, file_data in self.file_data.items():
+            if not file_data.get('best_data') or file_data['best_data']['ur_data'].empty:
+                continue
+
+            # Извлекаем BPM из лучших записей для группировки
+            ur_data = file_data['best_data']['ur_data']
+            bpm_data = file_data['best_data']['bpm_data']
+
+            # Находим средний BPM для этой сессии
+            if not bpm_data.empty:
+                avg_bpm = bpm_data['BPM'].mean()
+
+                # Определяем BPM окно (шаг 10, центрированное)
+                window_center = round(avg_bpm / 10) * 10
+                window_key = str(window_center)
+
+                if window_key not in bpm_windows:
+                    bpm_windows[window_key] = {
+                        'center': window_center,
+                        'count': 0,
+                        'ur_100': [],
+                        'ur_200': [],
+                        'ur_500': [],
+                        'ur_1000': []
+                    }
+
+                bpm_windows[window_key]['count'] += 1
+
+                # Добавляем UR метрики
+                for window_size in [100, 200, 500, 1000]:
+                    ur_row = ur_data[ur_data['Window Size'] == window_size]['UR']
+                    if not ur_row.empty:
+                        ur_value = ur_row.iloc[0]
+                        bpm_windows[window_key][f'ur_{window_size}'].append(ur_value)
+
+        # Формируем итоговые данные с лучшими значениями
+        records_data = []
+        for window_key, data in sorted(bpm_windows.items(), key=lambda x: x[1]['center']):
+            record = {
+                'bpm_center': data['center'],
+                'center_bpm': data['center'],
+                'count': data['count'],
+                'best_ur_100': min(data['ur_100']) if data['ur_100'] else None,
+                'best_ur_200': min(data['ur_200']) if data['ur_200'] else None,
+                'best_ur_500': min(data['ur_500']) if data['ur_500'] else None,
+                'best_ur_1000': min(data['ur_1000']) if data['ur_1000'] else None
+            }
+            records_data.append(record)
+
+        return records_data
+
+    def create_records_charts(self, records_data):
+        """Создание единого графика с 4 линиями UR в разных цветах"""
+        if not records_data:
+            return ""
+
+        try:
+            fig, ax = plt.subplots(1, 1, figsize=(16, 10), facecolor='#2b2b2b')
+
+            # Подготавливаем данные для графиков
+            bpm_100 = [r['center_bpm'] for r in records_data if r['best_ur_100'] is not None]
+            ur_100_values = [r['best_ur_100'] for r in records_data if r['best_ur_100'] is not None]
+
+            bpm_200 = [r['center_bpm'] for r in records_data if r['best_ur_200'] is not None]
+            ur_200_values = [r['best_ur_200'] for r in records_data if r['best_ur_200'] is not None]
+
+            bpm_500 = [r['center_bpm'] for r in records_data if r['best_ur_500'] is not None]
+            ur_500_values = [r['best_ur_500'] for r in records_data if r['best_ur_500'] is not None]
+
+            bpm_1000 = [r['center_bpm'] for r in records_data if r['best_ur_1000'] is not None]
+            ur_1000_values = [r['best_ur_1000'] for r in records_data if r['best_ur_1000'] is not None]
+
+            # Цвета для разных UR метрик (хорошо различимые)
+            colors = {
+                'ur_100': '#00ff88',    # Яркий зеленый
+                'ur_200': '#40e0d0',    # Бирюзовый
+                'ur_500': '#ff6b6b',    # Коралловый
+                'ur_1000': '#ffd700'    # Золотой
+            }
+
+            # Рисуем все линии на одном графике
+            if ur_100_values:
+                ax.plot(bpm_100, ur_100_values, 'o-', color=colors['ur_100'],
+                       linewidth=3, markersize=8, label='UR@100', alpha=0.9)
+
+            if ur_200_values:
+                ax.plot(bpm_200, ur_200_values, 's-', color=colors['ur_200'],
+                       linewidth=3, markersize=7, label='UR@200', alpha=0.9)
+
+            if ur_500_values:
+                ax.plot(bpm_500, ur_500_values, '^-', color=colors['ur_500'],
+                       linewidth=3, markersize=8, label='UR@500', alpha=0.9)
+
+            if ur_1000_values:
+                ax.plot(bpm_1000, ur_1000_values, 'D-', color=colors['ur_1000'],
+                       linewidth=3, markersize=6, label='UR@1000', alpha=0.9)
+
+            # Настройка графика
+            ax.set_title('Best UR Performance vs BPM (±5)', color='#ffaa44', fontsize=18, weight='bold', pad=20)
+            ax.set_xlabel('BPM', color='#cccccc', fontsize=14, weight='bold')
+            ax.set_ylabel('Unstable Rate', color='#cccccc', fontsize=14, weight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.set_facecolor('#363636')
+            ax.tick_params(labelsize=12, colors='#cccccc')
+
+            # Находим общий максимум для всех UR значений
+            all_ur_values = ur_100_values + ur_200_values + ur_500_values + ur_1000_values
+            if all_ur_values:
+                max_ur = max(all_ur_values)
+                ax.set_ylim(0, max_ur * 1.1)
+
+            # Добавляем легенду
+            legend = ax.legend(loc='upper right', frameon=True, fancybox=True, shadow=True,
+                             fontsize=12, framealpha=0.9)
+            legend.get_frame().set_facecolor('#404040')
+            legend.get_frame().set_edgecolor('#666666')
+            for text in legend.get_texts():
+                text.set_color('#cccccc')
+
+            plt.tight_layout()
+
+            # Сохраняем в base64
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png', facecolor='#2b2b2b', bbox_inches='tight', dpi=100)
+            buffer.seek(0)
+            plot_data = buffer.getvalue()
+            buffer.close()
+            plt.close(fig)
+
+            return base64.b64encode(plot_data).decode()
+
+        except Exception as e:
+            print(f"Ошибка создания графиков рекордов: {e}")
+            return ""
 
     def delete_files_by_id(self, file_id):
         """Безопасное удаление файлов по ID"""
@@ -986,16 +1447,9 @@ class WebCSVMonitor:
             # Удаляем из кэша данных
             if file_id in self.file_data:
                 del self.file_data[file_id]
-            
-            # Очищаем кеш изображений для удаленных файлов
-            cache_keys_to_remove = []
-            for cache_key in self.image_cache.keys():
-                # Если ключ кеша содержит ID удаленного файла, удаляем его
-                if file_id in cache_key:
-                    cache_keys_to_remove.append(cache_key)
-            
-            for cache_key in cache_keys_to_remove:
-                del self.image_cache[cache_key]
+
+            # Очищаем файлы кеша для удаленных данных
+            self._cleanup_cache_for_session(file_id)
             
             return deleted_count > 0
             
@@ -1022,6 +1476,19 @@ class WebCSVMonitor:
                         self.end_headers()
                         json_data = monitor_ref.generate_json_data()
                         self.wfile.write(json_data.encode())
+                    elif parsed_path.path == '/api/records':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+                        records_data = monitor_ref.generate_records_data()
+                        charts_base64 = monitor_ref.create_records_charts(records_data)
+                        response_data = {
+                            "records": records_data,
+                            "charts": charts_base64,
+                            "timestamp": datetime.now().strftime("%H:%M:%S")
+                        }
+                        self.wfile.write(json.dumps(response_data).encode())
                     elif parsed_path.path.startswith('/api/delete/'):
                         # Безопасное удаление файлов по ID
                         try:
