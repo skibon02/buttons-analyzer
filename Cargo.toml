@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-winit = "0.30.12"
+winit = { version = "0.30.12", default-features = false, features = ["wayland", "rwh_06"] }
+softbuffer = { version = "0.4.6", default-features = false, features = ["wayland"] }
 log = "0.4.28"
 simple_logger = "5.0.0"
 ringbuf = "0.4.8"

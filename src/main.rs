@@ -1,24 +1,25 @@
 mod calc;
 pub mod export;
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::{mem, thread};
-use std::mem::{replace, take};
+use std::thread;
 use std::time::Duration;
-use cpal::{BufferSize, Sample, Stream, StreamConfig};
+use cpal::{BufferSize, Stream, StreamConfig};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use winit::event::{WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, DeviceEvents};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowAttributes, WindowId};
+use softbuffer::Surface;
+use std::num::NonZeroU32;
 use log::{error, info, Level};
 use ringbuf::consumer::Consumer;
 use ringbuf::LocalRb;
 use ringbuf::storage::Heap;
 use ringbuf::traits::RingBuffer;
-use rodio::{ChannelCount, Decoder, Source};
+use rodio::{Decoder, Source};
 use sparkles_core::{Timestamp, TimestampProvider};
 use crate::calc::spawn;
 use crate::export::export_cur_stats;
@@ -59,7 +60,8 @@ fn main() {
 }
 
 struct App {
-    win: Option<Window>,
+    win: Option<Rc<Window>>,
+    surface: Option<Surface<Rc<Window>, Rc<Window>>>,
     shared: Arc<Mutex<Shared>>,
     prev_tm: u64,
     ticks_per_s: u64,
@@ -94,7 +96,7 @@ impl App {
         let config = StreamConfig {
             channels,
             sample_rate: cpal::SampleRate(48000),
-            buffer_size: BufferSize::Fixed(300),
+            buffer_size: BufferSize::Fixed(64),
         };
 
         // let sin_440 = (0..).map(|x| {
@@ -127,6 +129,7 @@ impl App {
 
         Self {
             win: None,
+            surface: None,
             shared,
             prev_tm: 0,
             ticks_per_s: TICKS_PER_S.load(Ordering::Relaxed),
@@ -144,7 +147,11 @@ impl winit::application::ApplicationHandler for App {
         if self.win.is_none() {
             let attrs = WindowAttributes::default()
                 .with_active(true);
-            self.win = Some(event_loop.create_window(attrs).unwrap());
+            let window = Rc::new(event_loop.create_window(attrs).unwrap());
+            let context = softbuffer::Context::new(window.clone()).unwrap();
+            let surface = softbuffer::Surface::new(&context, window.clone()).unwrap();
+            self.surface = Some(surface);
+            self.win = Some(window);
             event_loop.listen_device_events(DeviceEvents::WhenFocused);
         }
     }
@@ -154,6 +161,30 @@ impl winit::application::ApplicationHandler for App {
         if let WindowEvent::CloseRequested = event {
             export_cur_stats(&self.shared);
             event_loop.exit();
+        }
+
+        if let WindowEvent::RedrawRequested = event {
+            if let (Some(surface), Some(window)) = (&mut self.surface, &self.win) {
+                if window.id() == window_id {
+                    let size = window.inner_size();
+                    if let (Some(width), Some(height)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
+                        surface.resize(width, height).unwrap();
+                        let mut buffer = surface.buffer_mut().unwrap();
+                        buffer.fill(0xFF2b2b2b);
+                        buffer.present().unwrap();
+                    }
+                }
+            }
+        }
+
+        if let WindowEvent::Resized(size) = event {
+            if let (Some(surface), Some(window)) = (&mut self.surface, &self.win) {
+                if window.id() == window_id {
+                    if let (Some(width), Some(height)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
+                        surface.resize(width, height).unwrap();
+                    }
+                }
+            }
         }
 
         if let WindowEvent::KeyboardInput {
